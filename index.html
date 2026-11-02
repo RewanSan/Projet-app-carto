@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Carte Rando</title>
+<meta name="theme-color" content="#2f5d3a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+html,body{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif}
+#map{position:absolute;inset:0}
+#bar{position:absolute;z-index:1000;left:0;right:0;bottom:0;display:flex;gap:8px;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:#f6f4ee;border-top:2px solid #2f5d3a}
+#bar button,#bar select{flex:1;min-width:0;min-height:44px;font:600 15px system-ui,sans-serif;border:1.5px solid #2f5d3a;border-radius:8px;background:#fff;color:#1d3a25}
+#bar button:focus-visible,#bar select:focus-visible{outline:3px solid #e8a317}
+#bar button.on{background:#b3361f;border-color:#b3361f;color:#fff}
+#info{position:absolute;z-index:1000;top:calc(8px + env(safe-area-inset-top));left:8px;background:#f6f4ee;border:1.5px solid #2f5d3a;padding:6px 10px;border-radius:8px;font:600 15px system-ui,sans-serif;color:#1d3a25;display:none}
+.leaflet-bottom{bottom:calc(62px + env(safe-area-inset-bottom))}
+#panel{position:absolute;z-index:1000;left:8px;right:8px;bottom:calc(66px + env(safe-area-inset-bottom));background:#f6f4ee;border:1.5px solid #2f5d3a;border-radius:10px;padding:10px 10px 2px;font:600 14px system-ui,sans-serif;color:#1d3a25}
+#panel[hidden]{display:none}
+#panel .row{display:grid;grid-template-columns:1fr 52px;gap:4px 8px;align-items:center;margin-bottom:10px}
+#panel label,#panel select{grid-column:1/-1}
+#panel select{min-height:40px;font:inherit;border:1.5px solid #2f5d3a;border-radius:8px;background:#fff;color:#1d3a25}
+#panel input[type=range]{width:100%;margin:0}
+#panel output{text-align:right}
+#ver{font-weight:400;font-size:12px;opacity:.7;margin:-4px 0 8px}
+#msg{position:absolute;z-index:1001;top:calc(56px + env(safe-area-inset-top));left:8px;right:8px;background:#b3361f;color:#fff;padding:8px 12px;border-radius:8px;font:600 14px system-ui,sans-serif;display:none}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="info"></div>
+<div id="msg" role="status"></div>
+<div id="panel" hidden>
+  <div class="row"><label for="f1">Couche 1 (fond)</label><select id="f1"></select>
+    <input type="range" id="o1" min="0" max="100" step="5" aria-label="Opacité de la couche 1"><output id="p1"></output></div>
+  <div class="row"><label for="f2">Couche 2 (par-dessus)</label><select id="f2"></select>
+    <input type="range" id="o2" min="0" max="100" step="5" aria-label="Opacité de la couche 2"><output id="p2"></output></div>
+  <div id="ver">Version 6</div>
+</div>
+<div id="bar">
+  <button id="cch">Couches</button>
+  <button id="loc">Me situer</button>
+  <button id="rec">Enregistrer</button>
+  <button id="gpx">GPX</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const ign = (layer, fmt, style = "normal") => `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style}&FORMAT=${fmt}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+// Top 25 = Cartes IGN (SCAN 25). Données à accès restreint : l'IGN fournit une clé transitoire publique ; elle peut changer ou être retirée.
+const TOP25 = "https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS&STYLE=normal&FORMAT=image/jpeg&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}";
+const fonds = {
+  "Plan IGN": [ign("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { maxZoom: 19, attribution: "© IGN", crossOrigin: true }],
+  "Top 25 (Cartes IGN)": [TOP25, { maxZoom: 19, maxNativeZoom: 16, attribution: "© IGN" }],
+  "Photos aériennes": [ign("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { maxZoom: 19, attribution: "© IGN", crossOrigin: true }],
+  "Relief (ombrage)": [ign("ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW", "image/png", "estompage_grayscale"), { maxZoom: 19, maxNativeZoom: 17, attribution: "© IGN", crossOrigin: true }],
+  "OpenStreetMap": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap", crossOrigin: true }]
+};
+
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
+
+const v = load("vue", { c: [46.6, 2.4], z: 6 });
+const map = L.map("map", { zoomControl: false, attributionControl: false }).setView(v.c, v.z);
+L.control.attribution({ position: "topright" }).addTo(map);
+L.control.scale({ imperial: false, position: "bottomleft" }).addTo(map);
+map.on("moveend", () => save("vue", { c: map.getCenter(), z: map.getZoom() }));
+
+// Couches : 1 = fond, 2 = superposition (chacune avec son opacité)
+function msg(t) { const e = $("msg"); e.textContent = t; e.style.display = "block"; clearTimeout(msg.t); msg.t = setTimeout(() => e.style.display = "none", 6000); }
+map.createPane("couche2"); map.getPane("couche2").style.zIndex = 250;
+const sel = load("couches", { n1: "Plan IGN", o1: 100, n2: "", o2: 60 });
+if (!fonds[sel.n1]) sel.n1 = "Plan IGN";
+if (sel.n2 && !fonds[sel.n2]) sel.n2 = "";
+const cur = {};
+function applique(i) {
+  if (cur[i]) { map.removeLayer(cur[i]); cur[i] = null; }
+  const nom = sel["n" + i];
+  if (i === 2) map.getPane("couche2").style.mixBlendMode = nom.startsWith("Relief") ? "multiply" : "normal";
+  if (!nom) return;
+  const [url, o] = fonds[nom];
+  const l = L.tileLayer(url, { ...o, opacity: sel["o" + i] / 100, pane: i === 2 ? "couche2" : "tilePane" });
+  let err = 0;
+  l.on("tileerror", () => { if (++err === 8) msg(nom + " : tuiles indisponibles (hors connexion ou accès restreint)."); });
+  l.addTo(map); cur[i] = l;
+}
+for (const i of [1, 2]) {
+  const s = $("f" + i), r = $("o" + i), p = $("p" + i);
+  if (i === 2) s.add(new Option("Aucune", "", false, !sel.n2));
+  Object.keys(fonds).forEach(n => s.add(new Option(n, n, false, n === sel["n" + i])));
+  r.value = sel["o" + i]; p.textContent = sel["o" + i] + " %";
+  s.onchange = () => { sel["n" + i] = s.value; save("couches", sel); applique(i); };
+  r.oninput = () => { sel["o" + i] = +r.value; p.textContent = r.value + " %"; if (cur[i]) cur[i].setOpacity(r.value / 100); save("couches", sel); };
+  applique(i);
+}
+$("cch").onclick = () => { $("panel").hidden = !$("panel").hidden; };
+map.on("click", () => { $("panel").hidden = true; });
+
+// Position et tracé
+let me, acc, watching = false, rec = false, dist = 0;
+let track = load("trace", []);                       // [lat, lng, alt, temps]
+const line = L.polyline(track.map(p => [p[0], p[1]]), { color: "#b3361f", weight: 5 }).addTo(map);
+for (let i = 1; i < track.length; i++) dist += map.distance([track[i-1][0], track[i-1][1]], [track[i][0], track[i][1]]);
+
+function show() {
+  const el = $("info");
+  el.style.display = track.length ? "block" : "none";
+  el.textContent = (dist / 1000).toFixed(2) + " km";
+}
+show();
+
+function watch() {
+  if (watching) return;
+  watching = true;
+  map.locate({ watch: true, enableHighAccuracy: true, setView: false });
+}
+
+map.on("locationfound", e => {
+  if (!me) {
+    me = L.circleMarker(e.latlng, { radius: 8, color: "#fff", weight: 2, fillColor: "#1a73e8", fillOpacity: 1 }).addTo(map);
+    acc = L.circle(e.latlng, { radius: e.accuracy, weight: 1, interactive: false }).addTo(map);
+  }
+  me.setLatLng(e.latlng);
+  acc.setLatLng(e.latlng).setRadius(e.accuracy);
+  if (rec && e.accuracy < 50) {
+    const last = track[track.length - 1];
+    const d = last ? map.distance([last[0], last[1]], e.latlng) : 0;
+    if (!last || d > 5) {
+      dist += d;
+      track.push([e.latlng.lat, e.latlng.lng, e.altitude, e.timestamp]);
+      line.addLatLng(e.latlng);
+      save("trace", track);
+      show();
+    }
+  }
+});
+map.on("locationerror", e => { watching = false; alert("Position indisponible : " + e.message); });
+
+$("loc").onclick = () => {
+  watch();
+  if (me) map.setView(me.getLatLng(), Math.max(map.getZoom(), 15));
+  else map.once("locationfound", e => map.setView(e.latlng, 15));
+};
+
+$("rec").onclick = () => {
+  rec = !rec;
+  $("rec").classList.toggle("on", rec);
+  $("rec").textContent = rec ? "Arrêter" : "Enregistrer";
+  if (rec) {
+    if (track.length && !confirm("Effacer le tracé précédent et recommencer ?")) { rec = false; $("rec").classList.remove("on"); $("rec").textContent = "Enregistrer"; return; }
+    track = []; dist = 0; line.setLatLngs([]); save("trace", track); show();
+    watch();
+  }
+};
+
+$("gpx").onclick = () => {
+  if (!track.length) return alert("Aucun tracé enregistré.");
+  const pts = track.map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[2] != null ? `<ele>${p[2]}</ele>` : ""}<time>${new Date(p[3]).toISOString()}</time></trkpt>`).join("");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Carte Rando" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Randonnée</name><trkseg>${pts}</trkseg></trk></gpx>`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([xml], { type: "application/gpx+xml" }));
+  a.download = "randonnee.gpx";
+  a.click();
+};
+
+if ("serviceWorker" in navigator) {
+  const avait = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js");
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (avait) location.reload(); });
+}
+</script>
+</body>
+</html>
