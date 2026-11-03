@@ -26,6 +26,13 @@ html,body{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif}
 #panel input[type=range]{width:100%;margin:0}
 #panel output{text-align:right}
 #ver{font-weight:400;font-size:12px;opacity:.7;margin:-4px 0 8px}
+#panel{max-height:70%;overflow-y:auto}
+#panel details{margin:0 0 10px}
+#panel summary{min-height:40px;display:flex;align-items:center;cursor:pointer}
+#panel details label{display:block;margin:8px 0 4px}
+#panel details input[type=text],#panel details input[type=password]{width:100%;box-sizing:border-box;min-height:40px;font:16px system-ui,sans-serif;border:1.5px solid #2f5d3a;border-radius:8px;padding:0 10px;background:#fff;color:#1d3a25}
+#panel input[type=checkbox]{width:20px;height:20px;vertical-align:middle;margin:0 8px 0 0}
+#panel details button{width:100%;min-height:44px;margin-top:10px;font:600 15px system-ui,sans-serif;border:1.5px solid #2f5d3a;border-radius:8px;background:#fff;color:#1d3a25}
 #msg{position:absolute;z-index:1001;top:calc(56px + env(safe-area-inset-top));left:8px;right:8px;background:#b3361f;color:#fff;padding:8px 12px;border-radius:8px;font:600 14px system-ui,sans-serif;display:none}
 </style>
 </head>
@@ -38,7 +45,14 @@ html,body{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif}
     <input type="range" id="o1" min="0" max="100" step="5" aria-label="Opacité de la couche 1"><output id="p1"></output></div>
   <div class="row"><label for="f2">Couche 2 (par-dessus)</label><select id="f2"></select>
     <input type="range" id="o2" min="0" max="100" step="5" aria-label="Opacité de la couche 2"><output id="p2"></output></div>
-  <div id="ver">Version 6</div>
+  <details id="gh"><summary>Envoi des traces sur GitHub</summary>
+    <label for="ghrepo">Dépôt (utilisateur/dépôt)</label><input type="text" id="ghrepo" placeholder="ton-nom/mes-traces" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <label for="ghtok">Jeton d'accès (token)</label><input type="password" id="ghtok" placeholder="github_pat_..." autocomplete="off">
+    <label for="ghdir">Dossier</label><input type="text" id="ghdir" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <label><input type="checkbox" id="ghauto">Envoyer à l'arrêt de l'enregistrement</label>
+    <button id="ghsend">Envoyer la trace maintenant</button>
+  </details>
+  <div id="ver">Version 7</div>
 </div>
 <div id="bar">
   <button id="cch">Couches</button>
@@ -70,7 +84,7 @@ L.control.scale({ imperial: false, position: "bottomleft" }).addTo(map);
 map.on("moveend", () => save("vue", { c: map.getCenter(), z: map.getZoom() }));
 
 // Couches : 1 = fond, 2 = superposition (chacune avec son opacité)
-function msg(t) { const e = $("msg"); e.textContent = t; e.style.display = "block"; clearTimeout(msg.t); msg.t = setTimeout(() => e.style.display = "none", 6000); }
+function msg(t, ok) { const e = $("msg"); e.style.background = ok ? "#2f5d3a" : "#b3361f"; e.textContent = t; e.style.display = "block"; clearTimeout(msg.t); msg.t = setTimeout(() => e.style.display = "none", 6000); }
 map.createPane("couche2"); map.getPane("couche2").style.zIndex = 250;
 const sel = load("couches", { n1: "Plan IGN", o1: 100, n2: "", o2: 60 });
 if (!fonds[sel.n1]) sel.n1 = "Plan IGN";
@@ -153,18 +167,43 @@ $("rec").onclick = () => {
     if (track.length && !confirm("Effacer le tracé précédent et recommencer ?")) { rec = false; $("rec").classList.remove("on"); $("rec").textContent = "Enregistrer"; return; }
     track = []; dist = 0; line.setLatLngs([]); save("trace", track); show();
     watch();
-  }
+  } else if (gh.auto) envoyer();
 };
 
+function gpxXml() {
+  const pts = track.map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[2] != null ? `<ele>${p[2]}</ele>` : ""}<time>${new Date(p[3]).toISOString()}</time></trkpt>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Carto" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Randonnée</name><trkseg>${pts}</trkseg></trk></gpx>`;
+}
 $("gpx").onclick = () => {
   if (!track.length) return alert("Aucun tracé enregistré.");
-  const pts = track.map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[2] != null ? `<ele>${p[2]}</ele>` : ""}<time>${new Date(p[3]).toISOString()}</time></trkpt>`).join("");
-  const xml = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Carte Rando" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Randonnée</name><trkseg>${pts}</trkseg></trk></gpx>`;
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([xml], { type: "application/gpx+xml" }));
+  a.href = URL.createObjectURL(new Blob([gpxXml()], { type: "application/gpx+xml" }));
   a.download = "randonnee.gpx";
   a.click();
 };
+
+// Envoi de la trace dans un dépôt GitHub (API REST, jeton stocké uniquement dans ce navigateur)
+const gh = load("github", { repo: "", tok: "", dir: "traces", auto: false });
+$("ghrepo").value = gh.repo; $("ghtok").value = gh.tok; $("ghdir").value = gh.dir; $("ghauto").checked = gh.auto;
+[["ghrepo", "repo"], ["ghtok", "tok"], ["ghdir", "dir"]].forEach(([id, k]) => $(id).oninput = e => { gh[k] = e.target.value.trim(); save("github", gh); });
+$("ghauto").onchange = e => { gh.auto = e.target.checked; save("github", gh); };
+async function envoyer() {
+  if (track.length < 2) return msg("Aucune trace à envoyer.");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(gh.repo) || !gh.tok) return msg("Renseigne le dépôt et le jeton dans Couches → Envoi des traces.");
+  const d = new Date(track[0][3]), z = n => String(n).padStart(2, "0");
+  const nom = `trace-${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.gpx`;
+  const dir = (gh.dir || "traces").replace(/^\/+|\/+$/g, "");
+  try {
+    const r = await fetch(`https://api.github.com/repos/${gh.repo}/contents/${dir}/${nom}`, {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + gh.tok, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+      body: JSON.stringify({ message: "Trace " + nom, content: btoa(unescape(encodeURIComponent(gpxXml()))) })
+    });
+    if (r.status === 201) msg("Trace envoyée : " + dir + "/" + nom, true);
+    else { const j = await r.json().catch(() => ({})); msg("Échec (" + r.status + ") : " + (j.message || "erreur")); }
+  } catch (e) { msg("Échec de l'envoi : réseau indisponible. Réessaie plus tard avec « Envoyer la trace maintenant »."); }
+}
+$("ghsend").onclick = envoyer;
 
 if ("serviceWorker" in navigator) {
   const avait = !!navigator.serviceWorker.controller;
